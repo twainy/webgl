@@ -1,0 +1,328 @@
+
+<html>
+
+<head>
+<title>Learning WebGL &mdash; lesson 1</title>
+<meta http-equiv="content-type" content="text/html; charset=ISO-8859-1">
+
+<script type="text/javascript" src="glMatrix-0.9.5.min.js"></script>
+
+<script id="shader-fs" type="x-shader/x-fragment">
+    precision mediump float;
+    varying vec4 vColor;
+    varying vec2 vUV;
+    void main(void) {
+        float r=min(1.0,dot(vUV.xy,vUV.xy));
+        r=1.0-r*r;
+        gl_FragColor = vec4(vColor.xyz,r);
+    }
+</script>
+
+<script id="shader-vs" type="x-shader/x-vertex">
+    attribute vec3 vaVertexPosition;
+    attribute vec4 vaVertexColor;
+    attribute vec3 vaUV;
+
+    uniform mat4 uMVMatrix;
+    uniform mat4 uPMatrix;
+    uniform vec4 uScr;
+
+    varying vec4 vColor;
+    varying vec2 vUV;
+
+    void main(void) {
+        vec3 pos=vaVertexPosition.xyz;
+        pos.y=pos.y+cos(uScr.y+vaUV.z);
+        vec4 position= uMVMatrix * vec4(pos,1.0);
+        position = uPMatrix * position;
+        position.x = position.x+vaUV.x * vaUV.z * 5.0;// * cos(position.x);
+        position.y = position.y+vaUV.y * vaUV.z * 5.0;// * cos(position.x);
+        gl_Position = position;
+        vColor = vaVertexColor;
+        vColor = vaVertexColor;
+        vColor = vaVertexColor;
+        vUV = vaUV.xy;
+    }
+</script>
+
+
+<script type="text/javascript">
+
+var gl;
+function initGL(canvas) {
+    try {
+        gl = canvas.getContext("experimental-webgl");
+        gl.viewportWidth = canvas.width;
+        gl.viewportHeight = canvas.height;
+    } catch (e) {
+    }
+    if (!gl) {
+        alert("Could not initialise WebGL, sorry :-(");
+    }
+}
+
+/**
+ * @param hsv 0~1
+ */
+function HSVtoRGB(h, s, v) {
+    if (0 == s) {
+        return [v, v, v];
+    }
+    if (1 < s) s = 1;
+    if (h < 0) h++;
+    if (1 < h) h--;
+    var i = Math.floor(h * 6);
+    var f = h * 6 - i;
+    var p = v * (1 - s);
+    var q = v * (1 - f * s);
+    var t = v * (1 - (1 - f) * s);
+    switch (i) {
+        case 0:
+            return [v, t, p];
+        case 1:
+            return [q, v, p];
+        case 2:
+            return [p, v, t];
+        case 3:
+            return [p, q, v];
+        case 4:
+            return [t, p, v];
+        default:
+            return [v, p, q];
+    }
+}
+
+function getShader(gl, id) {
+    var shaderScript = document.getElementById(id);
+    if (!shaderScript) {
+        return null;
+    }
+
+    var str = "";
+    var k = shaderScript.firstChild;
+    while (k) {
+        if (k.nodeType == 3) {
+            str += k.textContent;
+        }
+        k = k.nextSibling;
+    }
+
+    var shader;
+    if (shaderScript.type == "x-shader/x-fragment") {
+        shader = gl.createShader(gl.FRAGMENT_SHADER);
+    } else if (shaderScript.type == "x-shader/x-vertex") {
+        shader = gl.createShader(gl.VERTEX_SHADER);
+    } else {
+        return null;
+    }
+
+    gl.shaderSource(shader, str);
+    gl.compileShader(shader);
+
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        alert(gl.getShaderInfoLog(shader));
+        return null;
+    }
+
+    return shader;
+}
+
+function getText(id) {
+    var shaderScript = document.getElementById(id);
+    if (!shaderScript) {
+        return null;
+    }
+
+    var str = "";
+    var k = shaderScript.firstChild;
+    while (k) {
+        if (k.nodeType == 3) {
+            str += k.textContent;
+        }
+        k = k.nextSibling;
+    }
+    return str;
+}
+
+var shaderProgram;
+
+function initShaders() {
+    var fragmentShader = getShader(gl, "shader-fs");
+    var vertexShader = getShader(gl, "shader-vs");
+
+    shaderProgram = gl.createProgram();
+    gl.attachShader(shaderProgram, vertexShader);
+    gl.attachShader(shaderProgram, fragmentShader);
+    gl.linkProgram(shaderProgram);
+
+    if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
+        alert("Could not initialise shaders");
+    }
+
+    gl.useProgram(shaderProgram);
+    shaderProgram.vertexAttribute = [];
+    getText("shader-vs").split('\n').forEach(function (a) {
+        var l = a.match(/va[A-Za-z]*;/);
+        var c = a.match(/vec[1-4]/);
+        a.match('attribute') && Array.isArray(l) && l.forEach(function (b) {
+            var name = b.slice(0, b.length - 1);
+            var attr = {
+                name: name,
+                len: Number(c[0][3]),
+                location: gl.getAttribLocation(shaderProgram, name)
+            };
+            shaderProgram.vertexAttribute.push(attr);
+            gl.enableVertexAttribArray(attr.location);
+        });
+    });
+
+    shaderProgram.pMatrixUniform = gl.getUniformLocation(shaderProgram, "uPMatrix");
+    shaderProgram.mvMatrixUniform = gl.getUniformLocation(shaderProgram, "uMVMatrix");
+    shaderProgram.uScr = gl.getUniformLocation(shaderProgram, "uScr");
+}
+
+function BSpline(f, p) {
+    var N = p.length;
+    f *= N;
+    if (f < 0)
+        f = 0;
+    if (f > N)
+        f = N - 0.00001;
+    var o = Math.floor(f); //offset
+    var u = f - o; //interp
+
+    var point = Array(4);
+    for (var i = 0; i < 4; i++) {
+        if (i + o - 1 < 0)
+            point[i] = p[0];
+        else if (i + o - 1 > N - 1)
+            point[i] = p[N - 1];
+        else
+            point[i] = p[i + o - 1];
+    }
+    var key = [
+        (point[0] + 4 * point[1] + point[2]) / 6,
+        (point[2] - point[0]) / 2,
+        (point[0] - 2 * point[1] + point[2]) / 2,
+        (3 * (point[1] - point[2]) + point[3] - point[0]) / 6
+    ];
+    return (key[0] + u * (key[1] + u * (key[2] + key[3] * u)));
+}
+
+var mvMatrix = mat4.create();
+var pMatrix = mat4.create();
+
+var squareVertexPositionBuffer;
+
+function initBuffers() {
+    squareVertexPositionBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, squareVertexPositionBuffer);
+    var vertices = [];
+    var sq = 100;
+    for (var j = 0; j < 10; j++){
+        console.log("count");
+    for (var i = 0; i < sq; i++) {
+        var uv = [
+            [1, 1, Math.random()],
+            [-1, 1, Math.random()],
+            [1, -1, Math.random()],
+            [-1, -1, Math.random()]
+        ];
+        //var r = BSpline(i / sq, [0, 0, 10, 20, 0, 5, 10, 5, 0]);
+        var center = [Math.cos(i / 5) * i* 1, (j-10) * -5, Math.sin(i/5) * i * 1];
+        var c = HSVtoRGB(i * 2/sq, 0.8, 1.0);
+        c = c.concat(1.0);
+        vertices = vertices.concat(center);
+        vertices = vertices.concat(c);
+        vertices = vertices.concat(uv[0]);
+
+        vertices = vertices.concat(center);
+        vertices = vertices.concat(c);
+        vertices = vertices.concat(uv[1]);
+
+        vertices = vertices.concat(center);
+        vertices = vertices.concat(c);
+        vertices = vertices.concat(uv[2]);
+
+        vertices = vertices.concat(center);
+        vertices = vertices.concat(c);
+        vertices = vertices.concat(uv[2]);
+
+        vertices = vertices.concat(center);
+        vertices = vertices.concat(c);
+        vertices = vertices.concat(uv[1]);
+
+        vertices = vertices.concat(center);
+        vertices = vertices.concat(c);
+        vertices = vertices.concat(uv[3]);
+    }
+    }
+
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
+    squareVertexPositionBuffer.numItems = sq * 6 * 10;
+
+}
+
+var count = 0;
+
+function drawScene() {
+    count++;
+    gl.viewport(0, 0, gl.viewportWidth, gl.viewportHeight);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+    mat4.perspective(90, gl.viewportWidth / gl.viewportHeight, 1, 1000.0, pMatrix);
+
+    for (var i = 0; i < 1; i++) {
+        mat4.identity(mvMatrix);
+        //mat4.scale(mvMatrix, [0.2, 0.2, 0.2]);
+
+        mat4.translate(mvMatrix, [0, -10.0, -100]);
+        mat4.rotate(mvMatrix, count / 60 , [0, 1, 0.3]);
+        //mat4.scale(mvMatrix, [0.2, 0.2, 0.2]);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, squareVertexPositionBuffer);
+        var offs = 0, stride = 0;
+        shaderProgram.vertexAttribute.forEach(function (a) { stride += a.len * 4; });
+        shaderProgram.vertexAttribute.forEach(function (a) {
+            gl.vertexAttribPointer(a.location, a.len, gl.FLOAT, false, stride, offs);
+            offs += a.len * 4;
+        });
+        gl.uniformMatrix4fv(shaderProgram.pMatrixUniform, false, pMatrix);
+        gl.uniformMatrix4fv(shaderProgram.mvMatrixUniform, false, mvMatrix);
+        gl.uniform4f(shaderProgram.uScr, gl.viewportWidth / gl.viewportHeight, count / 30, 0, 0);
+        gl.drawArrays(gl.TRIANGLES, 0, squareVertexPositionBuffer.numItems);
+    }
+}
+
+function webGLStart() {
+    var canvas = document.getElementById("lesson01-canvas");
+    initGL(canvas);
+    initShaders();
+    initBuffers();
+
+    gl.clearColor(0.0, 0.0, 0.0, 1.0);
+    gl.disable(gl.DEPTH_TEST);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+
+}
+
+setInterval(drawScene, 16);
+var alpha = false;
+function toggleAlpha() {
+    alpha ? gl.enable(gl.BLEND) : gl.disable(gl.BLEND);
+    alpha = !alpha;
+}
+
+</script>
+
+
+</head>
+
+
+<body onload="webGLStart();">
+<canvas id="lesson01-canvas" style="border: none;" width="600" height="400"></canvas>
+<input id="toggle" type="button" value="toggle" onclick="toggleAlpha();" />
+</body>
+
+</html>

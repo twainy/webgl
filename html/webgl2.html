@@ -1,0 +1,1135 @@
+<html>
+<head>
+<title>webflower</title>
+<link href="css/bootstrap.min.css" rel="stylesheet" media="screen"></link>
+<script type="text/javascript" src="glMatrix-0.9.5.min.js"></script>
+<script src="js/bootstrap.min.js"></script>
+<script type="text/javascript" src="jq.js"></script>
+<script id="depth-fs" type="x-shader/x-fragment">
+    precision mediump float;
+    varying vec3 vColor;
+    varying vec3 vUVz;
+
+    void main(void) {
+        gl_FragColor = vec4(1,1,1,vUVz.z);
+    }
+  </script>
+<script id="shader-fs" type="x-shader/x-fragment">
+    precision mediump float;
+    varying vec3 vColor;
+    varying vec3 vUVz;
+
+    void main(void) {
+        float r=min(1.0,dot(vUVz.xy,vUVz.xy));
+        r=1.0-r*r;
+        gl_FragColor = vec4(vColor.xyz,r*vUVz.z);
+    }
+  </script>
+<script id="shader-vs" type="x-shader/x-vertex">
+    attribute vec4 vaPosition;//x,y,z,size
+    attribute vec3 vaColor;
+    attribute vec2 vaUV;
+
+    uniform mat4 uMVMatrix;
+    uniform mat4 uPMatrix;
+    uniform vec4 uScr;
+
+    varying vec3 vColor;
+    varying vec3 vUVz;
+
+    void main(void) {
+        vec4 position= uMVMatrix * vec4(vaPosition.xyz,1.0);
+        position = uPMatrix * position;
+        float boke=min(1.0,pow(1.0-(position.z/uScr.y),uScr.z));
+        position.x = position.x+vaUV.x*vaPosition.w*(1.0+boke*uScr.w)*uScr.x;
+        position.y = position.y+vaUV.y*vaPosition.w*(1.0+boke*uScr.w);
+        gl_Position=position;
+        vColor=vaColor;
+        vUVz=vec3(vaUV,max(0.3,1.0-boke));
+    }
+  </script>
+<script type="text/javascript">
+
+function rotationY(v,r) {
+    var cr = Math.cos(r);
+    var sr = Math.sin(r);
+    return [
+        cr * v[0] - sr * v[2],
+        v[1],
+        sr * v[0] + cr * v[2]
+    ];
+}
+function scale(v, s) {
+    return [v[0] * s, v[1] * s, v[2] * s];
+}
+function dot(a, b) {
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+function distance(v) {
+    return Math.sqrt(dot(v, v));
+}
+function multiply(a, b) {
+    return [a[0] * b, a[1] * b, a[2] * b];
+}
+function normalize(v) {
+    return multiply(v, distance(v));
+}
+
+var gl;
+function initGL(canvas) {
+    try {
+        gl = canvas.getContext("experimental-webgl");
+        gl.viewportWidth = canvas.width;
+        gl.viewportHeight = canvas.height;
+    } catch (e) {
+    }
+    if (!gl) {
+        alert("Could not initialise WebGL, sorry :-(");
+    }
+}
+
+function getText(id) {
+    var shaderScript = document.getElementById(id);
+    if (!shaderScript) {
+        return null;
+    }
+
+    var str = "";
+    var k = shaderScript.firstChild;
+    while (k) {
+        if (k.nodeType == 3) {
+            str += k.textContent;
+        }
+        k = k.nextSibling;
+    }
+    return str;
+}
+
+function getShader(gl, id) {
+    var shaderScript = document.getElementById(id);
+    if (!shaderScript) {
+        return null;
+    }
+
+    var str = "";
+    var k = shaderScript.firstChild;
+    while (k) {
+        if (k.nodeType == 3) {
+            str += k.textContent;
+        }
+        k = k.nextSibling;
+    }
+
+    var shader;
+    if (shaderScript.type == "x-shader/x-fragment") {
+        shader = gl.createShader(gl.FRAGMENT_SHADER);
+    } else if (shaderScript.type == "x-shader/x-vertex") {
+        shader = gl.createShader(gl.VERTEX_SHADER);
+    } else {
+        return null;
+    }
+
+    gl.shaderSource(shader, str);
+    gl.compileShader(shader);
+
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        alert(gl.getShaderInfoLog(shader));
+        return null;
+    }
+
+    return shader;
+}
+
+/**
+ * f float
+ * p Array
+ */
+function BSpline(f, p) {
+    var N = p.length;
+    f *= N;
+    if (f < 0)
+        f = 0;
+    if (f > N)
+        f = N - 0.00001;
+    var o = Math.floor(f); //offset
+    var u = f - o; //interp
+
+    var point = Array(4);
+    for (var i = 0; i < 4; i++) {
+        if (i + o - 1 < 0)
+            point[i] = p[0];
+        else if (i + o - 1 > N - 1)
+            point[i] = p[N - 1];
+        else
+            point[i] = p[i + o - 1];
+    }
+    var key = [
+        (point[0] + 4 * point[1] + point[2]) / 6,
+        (point[2] - point[0]) / 2,
+        (point[0] - 2 * point[1] + point[2]) / 2,
+        (3 * (point[1] - point[2]) + point[3] - point[0]) / 6
+    ];
+    return (key[0] + u * (key[1] + u * (key[2] + key[3] * u)));
+}
+
+function vectorBSpline(f, pp) {
+    return pp.map(function (a) { return BSpline(f, a); });
+}
+
+/**
+ * @param hsv 0~1
+ */
+function HSVtoRGB(h, s, v) {
+    if (0 == s) {
+        return [v, v, v];
+    }
+    if (1 < s) s = 1;
+    if (h < 0) h++;
+    if (1 < h) h--;
+    var i = Math.floor(h * 6);
+    var f = h * 6 - i;
+    var p = v * (1 - s);
+    var q = v * (1 - f * s);
+    var t = v * (1 - (1 - f) * s);
+    switch (i) {
+        case 0:
+            return [v, t, p];
+        case 1:
+            return [q, v, p];
+        case 2:
+            return [p, v, t];
+        case 3:
+            return [p, q, v];
+        case 4:
+            return [t, p, v];
+        default:
+            return [v, p, q];
+    }
+}
+
+var init = {
+    "pose": [
+        {
+            "pos": [
+                0,
+                0,
+                -40
+            ],
+            "color": [
+                0.5,
+                0.1,
+                0
+            ],
+            "scale": [
+                0.5,
+                0.5,
+                0.5
+            ]
+        },
+        {
+            "pos": [
+                55,
+                0,
+                -62
+            ],
+            "color": [
+                0.5,
+                0.1,
+                0
+            ],
+            "scale": [
+                0.3,
+                0.3,
+                0.3
+            ],
+            "axis": [
+                0,
+                0,
+                -0.2,
+                0.2
+            ],
+            "density": 10,
+            "stamen": 5
+        },
+        {
+            "pos": [
+                70,
+                0,
+                -5
+            ],
+            "color": [
+                0.5,
+                0.1,
+                0
+            ],
+            "scale": [
+                0.4,
+                0.6,
+                0.4
+            ],
+            "axis": [
+                1,
+                0,
+                0.2,
+                0.5
+            ],
+            "density": 10,
+            "stamen": 5,
+            "petal": 4,
+            "rot": 3.2
+        },
+        {
+            "pos": [
+                40,
+                0,
+                -30
+            ],
+            "color": [
+                0.25,
+                0.1,
+                0
+            ],
+            "scale": [
+                0.5,
+                0.5,
+                0.5
+            ]
+        },
+        {
+            "pos": [
+                37,
+                0,
+                -5
+            ],
+            "color": [
+                0.25,
+                0.1,
+                0
+            ],
+            "scale": [
+                0.3,
+                0.6,
+                0.3
+            ],
+            "axis": [
+                1,
+                0,
+                -0.2,
+                0.9
+            ],
+            "petal": 3,
+            "rot": 3.7,
+            "stamen": 5,
+            "density": 10
+        },
+        {
+            "pos": [
+                -5,
+                0,
+                -65
+            ],
+            "color": [
+                0.25,
+                0.1,
+                0
+            ],
+            "scale": [
+                0.3,
+                0.6,
+                0.3
+            ],
+            "axis": [
+                1,
+                0,
+                -0.2,
+                -0.3
+            ],
+            "petal": 3,
+            "rot": 0.7,
+            "stamen": -1,
+            "density": 10
+        },
+        {
+            "pos": [
+                -55,
+                0,
+                -55
+            ],
+            "color": [
+                0.25,
+                0.1,
+                0
+            ],
+            "scale": [
+                0.3,
+                0.6,
+                0.3
+            ],
+            "axis": [
+                1,
+                0,
+                -0.2,
+                0.9
+            ],
+            "petal": 4,
+            "rot": 1.7,
+            "stamen": 5,
+            "density": 10
+        },
+        {
+            "pos": [
+                25,
+                0,
+                30
+            ],
+            "color": [
+                0.05,
+                0.1,
+                0
+            ],
+            "scale": [
+                0.5,
+                0.5,
+                0.5
+            ]
+        },
+        {
+            "pos": [
+                -12,
+                0,
+                45
+            ],
+            "color": [
+                0.05,
+                0.1,
+                0
+            ],
+            "scale": [
+                0.4,
+                0.5,
+                0.4
+            ],
+            "axis": [
+                0.5,
+                0,
+                -0.7,
+                0.6
+            ],
+            "rot": 3,
+            "stamen": 4,
+            "density": 10
+        },
+        {
+            "pos": [
+                50,
+                0,
+                50
+            ],
+            "color": [
+                0.05,
+                0.1,
+                0
+            ],
+            "scale": [
+                0.35,
+                0.45,
+                0.35
+            ],
+            "axis": [
+                0.5,
+                0,
+                0.7,
+                0.3
+            ],
+            "petal": 4,
+            "rot": 3,
+            "stamen": 4,
+            "density": 10
+        },
+        {
+            "pos": [
+                60,
+                0,
+                25
+            ],
+            "color": [
+                0.05,
+                0.1,
+                0
+            ],
+            "scale": [
+                0.375,
+                0.375,
+                0.375
+            ],
+            "axis": [
+                0.5,
+                0,
+                -0.7,
+                0.2
+            ],
+            "petal": 3,
+            "rot": 4,
+            "stamen": 4,
+            "density": 10
+        },
+        {
+            "pos": [
+                25,
+                0,
+                -5
+            ],
+            "color": [
+                0.05,
+                0.1,
+                0
+            ],
+            "scale": [
+                0.375,
+                0.375,
+                0.375
+            ],
+            "axis": [
+                0.5,
+                0,
+                -0.2,
+                0.6
+            ],
+            "petal": 1,
+            "rot": 3.5,
+            "stamen": -1,
+            "density": 10
+        },
+        {
+            "pos": [
+                -70,
+                0,
+                15
+            ],
+            "color": [
+                0.05,
+                0.1,
+                0
+            ],
+            "scale": [
+                0.35,
+                0.65,
+                0.35
+            ],
+            "axis": [
+                0.5,
+                0,
+                0.3,
+                0.5
+            ],
+            "petal": 3,
+            "rot": 3,
+            "stamen": 4,
+            "density": 10
+        },
+        {
+            "pos": [
+                -45,
+                0,
+                56
+            ],
+            "color": [
+                -0.05,
+                0.1,
+                0
+            ],
+            "scale": [
+                0.4,
+                0.4,
+                0.4
+            ],
+            "axis": [
+                0.5,
+                0,
+                0.7,
+                0.3
+            ],
+            "rot": 3,
+            "stamen": 4,
+            "density": 10
+        },
+        {
+            "pos": [
+                -65,
+                0,
+                -5
+            ],
+            "color": [
+                -0.05,
+                0.1,
+                0
+            ],
+            "scale": [
+                0.4,
+                0.7,
+                0.4
+            ],
+            "axis": [
+                -0.5,
+                0,
+                -0.7,
+                0.2
+            ],
+            "rot": 2.5,
+            "stamen": 3,
+            "petal": 3,
+            "density": 10
+        },
+        {
+            "pos": [
+                -65,
+                0,
+                -35
+            ],
+            "color": [
+                -0.05,
+                0.1,
+                0
+            ],
+            "scale": [
+                0.2,
+                0.8,
+                0.4
+            ],
+            "axis": [
+                -0.5,
+                0,
+                -0.7,
+                0.2
+            ],
+            "rot": 3.5,
+            "stamen": -1,
+            "petal": 2,
+            "density": 10
+        },
+        {
+            "pos": [
+                -65,
+                0,
+                35
+            ],
+            "color": [
+                -0.05,
+                0.1,
+                0
+            ],
+            "scale": [
+                0.2,
+                0.5,
+                0.3
+            ],
+            "axis": [
+                -0.5,
+                0,
+                -0.7,
+                0.2
+            ],
+            "rot": 4,
+            "stamen": -1,
+            "petal": 2,
+            "density": 5
+        },
+        {
+            "pos": [
+                -5,
+                0,
+                20
+            ],
+            "color": [
+                -0.05,
+                0.1,
+                0
+            ],
+            "scale": [
+                0.2,
+                0.5,
+                0.2
+            ],
+            "axis": [
+                -0.5,
+                0,
+                -0.7,
+                0.2
+            ],
+            "rot": 4,
+            "stamen": -1,
+            "petal": 2,
+            "density": 5
+        },
+        {
+            "pos": [
+                -20,
+                0,
+                68
+            ],
+            "color": [
+                -0.05,
+                0.1,
+                0
+            ],
+            "scale": [
+                0.2,
+                0.5,
+                0.2
+            ],
+            "axis": [
+                -0.5,
+                0,
+                -0.7,
+                0.2
+            ],
+            "rot": 3,
+            "stamen": -1,
+            "petal": 3,
+            "density": 5
+        },
+        {
+            "pos": [
+                -35,
+                0,
+                23
+            ],
+            "color": [
+                -0.05,
+                0.1,
+                0
+            ],
+            "scale": [
+                0.5,
+                0.5,
+                0.5
+            ],
+            "rot": 1
+        },
+        {
+            "pos": [
+                15,
+                0,
+                65
+            ],
+            "color": [
+                -0.05,
+                0.1,
+                0
+            ],
+            "scale": [
+                0.37,
+                0.37,
+                0.37
+            ],
+            "rot": 1,
+            "stamen": 6,
+            "density": 10
+        },
+        {
+            "pos": [
+                -40,
+                0,
+                -20
+            ],
+            "color": [
+                0.8,
+                0.1,
+                0
+            ],
+            "scale": [
+                0.5,
+                0.5,
+                0.5
+            ]
+        },
+        {
+            "pos": [
+                -35,
+                0,
+                -60
+            ],
+            "color": [
+                0.8,
+                0.1,
+                0
+            ],
+            "scale": [
+                0.35,
+                0.35,
+                0.35
+            ],
+            "axis": [
+                -0.5,
+                0,
+                0.7,
+                -0.6
+            ],
+            "density": 10,
+            "stamen": 5
+        },
+        {
+            "pos": [
+                25,
+                0,
+                -65
+            ],
+            "color": [
+                0.8,
+                0.1,
+                0
+            ],
+            "scale": [
+                0.3,
+                0.3,
+                0.3
+            ],
+            "density": 10,
+            "stamen": 5
+        },
+        {
+            "pos": [
+                80,
+                0,
+                -35
+            ],
+            "color": [
+                0.8,
+                0.1,
+                0
+            ],
+            "scale": [
+                0.3,
+                0.5,
+                0.3
+            ],
+            "axis": [
+                0.2,
+                0,
+                0.7,
+                1
+            ],
+            "density": 10,
+            "stamen": 5
+        }
+    ]
+};
+
+var shaderProgram;
+
+function initShaders() {
+    var fragmentShader = getShader(gl, "shader-fs");
+    var vertexShader = getShader(gl, "shader-vs");
+
+    shaderProgram = gl.createProgram();
+    gl.attachShader(shaderProgram, vertexShader);
+    gl.attachShader(shaderProgram, fragmentShader);
+    gl.linkProgram(shaderProgram);
+
+    if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
+        alert("Could not initialise shaders");
+    }
+
+    gl.useProgram(shaderProgram);
+
+    shaderProgram.vertexAttribute = [];
+
+    getText("shader-vs").split('\n').forEach(function (a) {
+        var l = a.match(/va[A-Za-z]*;/);
+        var c = a.match(/vec[1-4]/);
+        a.match('attribute') && Array.isArray(l) && l.forEach(function (b) {
+            var name = b.slice(0, b.length - 1);
+            var attr = {
+                name: name,
+                len: Number(c[0][3]),
+                location: gl.getAttribLocation(shaderProgram, name)
+            };
+            shaderProgram.vertexAttribute.push(attr);
+            gl.enableVertexAttribArray(attr.location);
+        });
+    });
+
+    shaderProgram.pMatrixUniform = gl.getUniformLocation(shaderProgram, "uPMatrix");
+    shaderProgram.mvMatrixUniform = gl.getUniformLocation(shaderProgram, "uMVMatrix");
+    shaderProgram.uScr = gl.getUniformLocation(shaderProgram, "uScr");
+
+    $('#json_data').val(JSON.stringify(init, null, '  '));
+}
+
+var count=0;
+
+var squareVertexPositionBuffer;
+var cubeVertexIndexBuffer;
+var numTriangles=0;
+
+function initBuffers() {
+
+    var c1 = [
+        [0, 3, 10, 30, 42, 45, 40], //x
+        [0, 0, 5, 10, 15, 12, 10], //y
+        [0, 0, 12, 20, 15, 5, 0], //z
+        [-0.05, 0.05, 0.05, 0.0], //h
+        [0.6, 0.6, 0.5, 0.3],  //s
+        [1.0, 0.7, 0.2], //v
+        [0.9,0.9, 0.75]//size
+    ];
+
+    var c2 = [
+        [0, 0, 6],
+        [0, 0,  12, 15],
+        [0, 0],
+        [0.2, 0.2],
+        [0.1, 0.1, 0.1, 0.1, 1.0, 1.0],
+        [1.0, 1.0],
+        [0.3, 0.3, 0.2, 0.2,0.2, 0.7]
+    ];
+    try {
+        var src = JSON.parse($('#json_data').val());
+    } catch (e) {
+        return;
+    }
+    var pose = src.pose;
+
+    var pcl = [];
+    //guide
+//      for (var p = 1; p < 10; p++) {
+//        pcl.push({ pos: [p * 10, 0, 0], col: [1, 0, 0], size: 1 });
+//        pcl.push({ pos: [0, 0,p * 10], col: [0, 1, 0], size: 1 });
+//      }
+
+    var mat = mat4.create();
+    for (var j = 0; j < pose.length; j++) {
+        var ns = 10;
+        for (var s = 9; s < ns; s++) {
+            var petal = pose[j].petal || 5;
+            for (var r = 0; r < petal; r++) {
+                mat4.identity(mat);
+                mat4.translate(mat, pose[j].pos);
+                pose[j].axis && mat4.rotate(mat, pose[j].axis[3], pose[j].axis);
+                mat4.scale(mat, [pose[j].scale[0] * (s + 1) / ns, pose[j].scale[1], pose[j].scale[2] * (s + 1) / ns]);
+                mat4.rotateY(mat, Math.PI * 0.4 * r + (pose[j].rot||0));
+                mat4.translate(mat, [0.25, 0.1, 0]);
+
+                var len = Number(10+(pose[j].density||20) * 2);
+                for (var i = 5; i < len - 5; i++) {
+                    var p = vectorBSpline(i / len, c1);
+                    var q = [];
+                    mat4.multiplyVec3(mat, [p[0], p[1], p[2]], q);
+                    var col = HSVtoRGB(p[3] + pose[j].color[0], p[4] + pose[j].color[1], p[5] + pose[j].color[2]);
+                    pcl.push({ pos: [q[0], q[1], q[2]], col: col, size: p[6] });
+                    mat4.multiplyVec3(mat, [p[0], p[1], -p[2]], q);
+                    pcl.push({ pos: [q[0], q[1], q[2]], col: col, size: p[6] });
+                }
+            }
+        }
+        var stamen=pose[j].stamen || 10;
+        for (var r = 0; r < stamen; r++) {
+            mat4.identity(mat);
+            mat4.translate(mat, pose[j].pos);
+            pose[j].axis && mat4.rotate(mat, pose[j].axis[3], pose[j].axis);
+            mat4.scale(mat, [pose[j].scale[0] + Math.cos(r / 6) * 0.4, pose[j].scale[1] + Math.random() * 0.3, pose[j].scale[2]]);
+            mat4.rotateY(mat, Math.PI * 0.234 * r);
+            mat4.translate(mat, [0.25, 0.1, 0]);
+
+            var len = 25;
+            for (var i = 2; i < len - 2; i++) {
+                var p = vectorBSpline(i / len, c2);
+                var q = [];
+                mat4.multiplyVec3(mat, [p[0], p[1], p[2]], q);
+                var col = HSVtoRGB(p[3] + pose[j].color[0], p[4] + pose[j].color[1], p[5] + pose[j].color[2]);
+                pcl.push({ pos: [q[0], q[1], q[2]], col: col, size: p[6] });
+            }
+        }
+    }
+    document.getElementById('show_poly').innerHTML = pcl.length + ":particles " + pcl.length * 4 + ":vertices " + pcl.length * 4 * 9 * 4 + ":bytes";
+
+
+    var UV = [[1, 1], [-1, 1], [1, -1], [-1, -1]];
+    var vtx = Array(pcl.length * 4 * 9);
+    var N = 0;
+    for (var i = 0; i < pcl.length; i++) {
+        for (var j = 0; j < 4; j++) {
+            var p = pcl[i].pos;
+            vtx[N++]=p[0];
+            vtx[N++]=p[1];
+            vtx[N++]=p[2];
+            vtx[N++]=pcl[i].size;
+            vtx[N++]=pcl[i].col[0];
+            vtx[N++]=pcl[i].col[1];
+            vtx[N++]=pcl[i].col[2];
+            vtx[N++]=UV[j][0];
+            vtx[N++]=UV[j][1];
+        }
+    }
+    var vertices = vtx.length / 9;
+    numTriangles = vertices / 4 * 2 ;
+
+    if(undefined==squareVertexPositionBuffer) squareVertexPositionBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, squareVertexPositionBuffer);
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vtx), gl.STATIC_DRAW);
+    squareVertexPositionBuffer.numItems = vertices;
+
+    var idx = [];
+    for (var i = 0; i < vertices / 4; i++) {
+        idx = idx.concat([i * 4 + 0, i * 4 + 1, i * 4 + 2, i * 4 + 2, i * 4 + 1, i * 4 + 3]);
+    }
+    if(undefined==cubeVertexIndexBuffer) cubeVertexIndexBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, cubeVertexIndexBuffer);
+    gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(idx), gl.STATIC_DRAW);
+}
+
+function drawScene() {
+    gl.viewport(0, 0, gl.viewportWidth, gl.viewportHeight);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+    var mvMatrix = mat4.create();
+    var pMatrix = mat4.create();
+    mat4.perspective(45, gl.viewportWidth / gl.viewportHeight, 5, 500.0, pMatrix);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, squareVertexPositionBuffer);
+    var offs = 0, stride = 0;
+    shaderProgram.vertexAttribute.forEach(function (a) { stride += a.len * 4; });
+    shaderProgram.vertexAttribute.forEach(function (a) {
+        gl.vertexAttribPointer(a.location, a.len, gl.FLOAT, false, stride, offs);
+        offs += a.len * 4;
+    });
+    gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, cubeVertexIndexBuffer);
+    var view = mat4.create();
+
+    var from = [
+        [0, 0, 0, 0, 0, 0, 0, 40, 70, -70, -40, 20, 0, 0],
+        [200, 200, 200, 200, 200, 30, 30, 20, 20, 20, 40, 30, 200, 200],
+        [-10, -10, -10, -10, -50, -100, -100, -60, 0, 60, 0, -100, -10, -10]
+    ];
+    var at = [
+        [0, 0, 10, 60, -60, 0],
+        [0, 0, 0, 0, 0],
+        [0, 0, 40, -70, 0]
+    ];
+    var focus = // 焦点距離
+            [70, 70, 70, 70, 70, 30, 30, 30, 70, 70];
+    var D = // 絞り (重い)
+            [1.2, 1.2, 1.2, 1.2, 4.0, 4.0, 1.2, 1.2];
+
+    var length = 1500;
+    var f = (count % length) / length;
+    mat4.lookAt(vectorBSpline(f, from), vectorBSpline(f, at), [0, 1, 0], view);
+
+    gl.uniformMatrix4fv(shaderProgram.pMatrixUniform, false, pMatrix);
+    gl.uniform4f(shaderProgram.uScr, 9 / 16, BSpline(f, focus), 1.5, BSpline(f, D));
+
+    mat4.identity(mvMatrix);
+    mat4.multiply(view, mvMatrix, mvMatrix);
+//      mat4.rotateY(mvMatrix, count / 500);
+
+    gl.uniformMatrix4fv(shaderProgram.mvMatrixUniform, false, mvMatrix);
+    gl.drawElements(gl.TRIANGLES, numTriangles * 3, gl.UNSIGNED_SHORT, 0);
+    count++;
+    setTimeout(drawScene, 16);
+}
+
+var last_count = 0;
+function FPS() {
+    document.getElementById('show_FPS').innerHTML = "FPS: " + (count - last_count);
+    last_count = count;
+}
+
+function webGLStart() {
+    var canvas = document.getElementById("main_frame");
+    initGL(canvas);
+    initShaders();
+    initBuffers();
+
+    gl.clearColor(0.0, 0.0, 0.0, 1.0);
+    gl.disable(gl.DEPTH_TEST);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+
+    setTimeout(drawScene, 16);
+    setInterval(FPS, 1000);
+//      setInterval(initBuffers, 2000);
+}
+
+
+</script>
+</head>
+<body onload="webGLStart();">
+<table>
+    <tr><td>
+        <canvas id="main_frame" style="border: none;" width="1024" height="576"></canvas>
+        <br />
+        <ul>
+            <li id="show_FPS"></li>
+            <li id="show_poly"></li>
+        </ul>
+    </td><td>
+        <div style="zoom:0.75;">
+            <textarea id="json_data" cols="60" rows="40"></textarea>
+        </div>
+        <input id="updaet_button" type="button" value="update" onclick="initBuffers();" />
+    </td>
+    </tr>
+</table>
+<div class="container">
+    <h2>how to particle</h2>
+    <p>see also http://learningwebgl.com/blog/?p=28 . reference from this.
+    </p>
+  <pre>    void main(void) {
+        float r=min(1.0,dot(vUV.xy,vUV.xy));
+        r=1.0-r*r;
+        gl_FragColor = vec4(vColor.xyz,r*vUVz.z);
+    }
+  </pre>
+    <p>vUV is input from VertexShader.range is -1.0 to +1.0</p>
+    <h2>why particle</h2>
+    <p>so easy and texture less. make outline on BSpline</p>
+  <pre>
+      var c1 = [
+        [0, 3, 10, 30, 42, 45, 40], //x
+        [0, 0, 5, 10, 15, 12, 10], //y
+        [0, 0, 12, 20, 15, 5, 0], //z
+        [-0.05, 0.05, 0.05, 0.0], //h
+        [0.6, 0.6, 0.5, 0.3],  //s
+        [1.0, 0.7, 0.2], //v
+        [0.75, 0.75]//size
+      ];
+  </pre>
+    <p>and Z mirror,like the heart</p>
+    <h2>Camera working</h2>
+    <p>
+  <pre>
+      var from = [
+        [0, 0, 0, 0, 0, 0, 0, 40, 70, -70, -40, 20, 0, 0],
+        [200, 200, 200, 200, 200, 30, 30, 20, 20, 20, 40, 30, 200, 200],
+        [-10, -10, -10, -10, -50, -100, -100, -60, 0, 60, 0, -100, -10, -10]
+      ];
+      var at = [
+        [0, 0, 10, 60, -60, 0],
+        [0, 0, 0, 0, 0],
+        [0, 0, 40, -70, 0]
+      ];
+
+      var length = 1500;
+      var f = (count % length) / length;
+      mat4.lookAt(vectorBSpline(f, from), vectorBSpline(f, at), [0, 1, 0], view);
+  </pre>
+    </p>
+    <h2>DoF</h2><p>
+    <img src="dof1.png" />
+    <hr />
+    <img src="dof0.png" />
+    </p>
+    <h2>problems</h2>
+    <p>FPS calc not work</p>
+    <h2>last</h2>
+    <p>reference</p>
+    <ul>
+        <li>WebGL tutorial</li>
+        <li>jQuery</li>
+        <li>Bootstrap</li>
+        <li>Tokyo 2020 candidate</li>
+    </ul>
+    <p>particle is  easy andfun!</p>
+</div>
+</body>
+</html>

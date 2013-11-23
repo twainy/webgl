@@ -1,3 +1,4 @@
+
 <html>
 
 <head>
@@ -8,20 +9,35 @@
 
     <script id="shader-fs" type="x-shader/x-fragment">
     precision mediump float;
-
+    varying vec4 vColor;
+    varying vec2 vUV;
     void main(void) {
-        gl_FragColor = vec4(1.0, 1.0, 1.0, 1.0);
+        float r=min(1.0,dot(vUV.xy,vUV.xy));
+        r=1.0-r*r;
+        gl_FragColor = vec4(vColor.xyz,r);
     }
 </script>
 
     <script id="shader-vs" type="x-shader/x-vertex">
-    attribute vec3 aVertexPosition;
-
+    attribute vec3 vaVertexPosition;
+    attribute vec4 vaVertexColor;
+    attribute vec2 vaUV;
     uniform mat4 uMVMatrix;
     uniform mat4 uPMatrix;
+    uniform vec4 uScr;
+
+    varying vec4 vColor;
+    varying vec2 vUV;
 
     void main(void) {
-        gl_Position = uPMatrix * uMVMatrix * vec4(aVertexPosition, 1.0);
+        vec4 position= uMVMatrix * vec4(vaVertexPosition.xyz,1.0);
+        position = uPMatrix * position;
+        position.x = position.x+vaUV.x*uScr.x;
+        position.y = position.y+vaUV.y;
+
+        gl_Position = position;
+        vColor = vaVertexColor;
+        vUV = vaUV;
     }
 </script>
 
@@ -78,7 +94,26 @@
         }
 
 
+        function getText(id) {
+            var shaderScript = document.getElementById(id);
+            if (!shaderScript) {
+                return null;
+            }
+
+            var str = "";
+            var k = shaderScript.firstChild;
+            while (k) {
+                if (k.nodeType == 3) {
+                    str += k.textContent;
+                }
+                k = k.nextSibling;
+            }
+            return str;
+        }
+
         var shaderProgram;
+
+
 
         function initShaders() {
             var fragmentShader = getShader(gl, "shader-fs");
@@ -94,70 +129,152 @@
             }
 
             gl.useProgram(shaderProgram);
-
-            shaderProgram.vertexPositionAttribute = gl.getAttribLocation(shaderProgram, "aVertexPosition");
-            gl.enableVertexAttribArray(shaderProgram.vertexPositionAttribute);
-
+            shaderProgram.vertexAttribute = [];
+            getText("shader-vs").split('\n').forEach(function (a) {
+                var l = a.match(/va[A-Za-z]*;/);
+                var c = a.match(/vec[1-4]/);
+                a.match('attribute') && Array.isArray(l) && l.forEach(function (b) {
+                        var name = b.slice(0, b.length - 1);
+                    var attr = {
+                        name: name,
+                        len: Number(c[0][3]),
+                        location: gl.getAttribLocation(shaderProgram, name)
+                    };
+                    shaderProgram.vertexAttribute.push(attr);
+                    gl.enableVertexAttribArray(attr.location);
+                });
+            });
             shaderProgram.pMatrixUniform = gl.getUniformLocation(shaderProgram, "uPMatrix");
             shaderProgram.mvMatrixUniform = gl.getUniformLocation(shaderProgram, "uMVMatrix");
+            shaderProgram.uScr = gl.getUniformLocation(shaderProgram, "uScr");
         }
 
 
         var mvMatrix = mat4.create();
         var pMatrix = mat4.create();
 
-        function setMatrixUniforms() {
-            gl.uniformMatrix4fv(shaderProgram.pMatrixUniform, false, pMatrix);
-            gl.uniformMatrix4fv(shaderProgram.mvMatrixUniform, false, mvMatrix);
-        }
 
 
 
         var squareVertexPositionBuffer;
-
+        var squareVertexColorBuffer;
+        /**
+         * HSV?? ? RGB?? ??????
+         *
+         * @param   {Number}  h         hue?        ? 0?360???
+         * @param   {Number}  s         saturation? ? 0?255 ???
+         * @param   {Number}  v         value?      ? 0?255 ???
+         * @return  {Object}  {r, g, b} ? r/g/b ? 0?255 ???
+         */
+        function HSVtoRGB(h, s, v) {
+            var r, g, b, i, f, p, q, t;
+            if (h && s === undefined && v === undefined) {
+                s = h.s, v = h.v, h = h.h;
+            }
+            i = Math.floor(h * 6);
+            f = h * 6 - i;
+            p = v * (1 - s);
+            q = v * (1 - f * s);
+            t = v * (1 - (1 - f) * s);
+            switch (i % 6) {
+                case 0: r = v, g = t, b = p; break;
+                case 1: r = q, g = v, b = p; break;
+                case 2: r = p, g = v, b = t; break;
+                case 3: r = p, g = q, b = v; break;
+                case 4: r = t, g = p, b = v; break;
+                case 5: r = v, g = p, b = q; break;
+            }
+            return {
+                r: Math.floor(r * 255),
+                g: Math.floor(g * 255),
+                b: Math.floor(b * 255)
+            };
+        }
         function initBuffers() {
             squareVertexPositionBuffer = gl.createBuffer();
             gl.bindBuffer(gl.ARRAY_BUFFER, squareVertexPositionBuffer);
-            var vertices = [
-                1.0,  1.0,  0.0,
-                -1.0,  1.0,  0.0,
-                1.0, -1.0,  0.0,
-                -1.0, -1.0,  0.0,
-                0, -2.0,  0.0,
-                -1.0, -3.0,  0.0
-            ];
+            var vertices = [];
+            var sq = 1000;
+            for (var i = 0; i < sq; i++) {
+                var v =  [
+                    [0, 0 , 0.0],
+                    [0, 0 , 0.0],
+                    [0, 0 , 0.0],
+                    [0, 0 , 0.0],
+                ];
+                var size = 1;
+                var uv = [
+                    [size, size],
+                    [-size, size],
+                    [size, -size],
+                    [-size, -size]
+                ];
+                var center = [Math.random() * 20, Math.random() * 20, Math.random() * 20];
+                for (var j = 0; j < 4; j++) {
+                    v[j][0] += center[0];
+                    v[j][1] += center[1];
+                    v[j][2] += center[2];
+                }
+                var c = HSVtoRGB(Math.random(), 0.8, 1.0);
+                c = [c.r/255, c.g/255, c.b/255];
+                console.log(c);
+                c = c.concat(1.0);
+                vertices =  vertices.concat(v[0]);
+                vertices = vertices.concat(c);
+                vertices =  vertices.concat(uv[0]);
+
+                vertices =  vertices.concat(v[1]);
+                vertices = vertices.concat(c);
+                vertices =  vertices.concat(uv[1]);
+
+                vertices =  vertices.concat(v[2]);
+                vertices = vertices.concat(c);
+                vertices =  vertices.concat(uv[2]);
+
+                vertices =  vertices.concat(v[2]);
+                vertices = vertices.concat(c);
+                vertices =  vertices.concat(uv[2]);
+
+                vertices =  vertices.concat(v[1]);
+                vertices = vertices.concat(c);
+                vertices =  vertices.concat(uv[1]);
+
+                vertices =  vertices.concat(v[3]);
+                vertices = vertices.concat(c);
+                vertices =  vertices.concat(uv[3]);
+            }
             gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
-            squareVertexPositionBuffer.itemSize = 3;
-            squareVertexPositionBuffer.numItems = 6;
+            squareVertexPositionBuffer.numItems = sq * 6;
         }
 
         var count = 0;
+
         function drawScene() {
             count++;
             gl.viewport(0, 0, gl.viewportWidth, gl.viewportHeight);
             gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
 
-            mat4.perspective(45, gl.viewportWidth / gl.viewportHeight, 0.1, 100.0, pMatrix);
+            mat4.perspective(45, gl.viewportWidth / gl.viewportHeight, 1, 1000.0, pMatrix);
 
+            //for (var i = 0; i < 10; i++) {
+            mat4.identity(mvMatrix);
 
-            for(var i=0; i < 10; i++){
-                mat4.identity(mvMatrix);
-                /*
-                mat4.translate(mvMatrix, [-1.5, 0.0, -7.0]);
+            mat4.translate(mvMatrix, [-10.0, -10.0, -50.0]);
+            mat4.rotate(mvMatrix, count / 100 * 3.14 * 1, [0.5, 1.0, 0.2]);
 
-                mat4.translate(mvMatrix, [3.0, 0.0, 0.0]);
-                */
-                mat4.translate(mvMatrix, [0.0, 0.0, -7.0]);
-    //            mat4.scale(mvMatrix, [0.1 * count * 1, 1, 1]);
-                mat4.rotate(mvMatrix, count / 60 * 3.14, [1.0, 1.0, 1.0]);
-                gl.bindBuffer(gl.ARRAY_BUFFER, squareVertexPositionBuffer);
-                gl.vertexAttribPointer(shaderProgram.vertexPositionAttribute, squareVertexPositionBuffer.itemSize, gl.FLOAT, false, 0, 0);
-                setMatrixUniforms();
-                gl.drawArrays(gl.TRIANGLES, 0, squareVertexPositionBuffer.numItems);
-            }
+            gl.bindBuffer(gl.ARRAY_BUFFER, squareVertexPositionBuffer);
+            var offs = 0, stride = 0;
+            shaderProgram.vertexAttribute.forEach(function (a) { stride += a.len * 4; });
+            shaderProgram.vertexAttribute.forEach(function (a) {
+                gl.vertexAttribPointer(a.location, a.len, gl.FLOAT, false, stride, offs);
+                offs += a.len * 4;
+            });
+        gl.uniformMatrix4fv(shaderProgram.pMatrixUniform, false, pMatrix);
+        gl.uniformMatrix4fv(shaderProgram.mvMatrixUniform, false, mvMatrix);
+            gl.uniform4f(shaderProgram.uScr, 400 / 600, 0, 0, 0);
+            gl.drawArrays(gl.TRIANGLES, 0, squareVertexPositionBuffer.numItems);
+            //}
         }
-
-
 
         function webGLStart() {
             var canvas = document.getElementById("lesson01-canvas");
@@ -165,13 +282,16 @@
             initShaders();
             initBuffers();
 
-            gl.clearColor(0.0, 1, 0.0, 0.5);
-            gl.enable(gl.DEPTH_TEST);
+            gl.clearColor(0.0, 0.0, 0.0, 1.0);
+            gl.disable(gl.DEPTH_TEST);
+            gl.enable(gl.BLEND);
+            gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
 
-            drawScene();
         }
 
         setInterval(drawScene, 16);
+
+
     </script>
 
 
@@ -179,7 +299,12 @@
 
 
 <body onload="webGLStart();">
-<canvas id="lesson01-canvas" style="border: none;" width="500" height="500"></canvas>
+<a href="http://learningwebgl.com/blog/?p=28">&lt;&lt; Back to Lesson 1</a><br />
+
+<canvas id="lesson01-canvas" style="border: none;" width="600" height="400"></canvas>
+
+<br/>
+<a href="http://learningwebgl.com/blog/?p=28">&lt;&lt; Back to Lesson 1</a><br />
 </body>
 
 </html>
