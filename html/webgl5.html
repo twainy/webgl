@@ -1,0 +1,515 @@
+
+<html>
+
+<head>
+<title>Learning WebGL &mdash; lesson 1</title>
+<meta http-equiv="content-type" content="text/html; charset=ISO-8859-1">
+
+<script type="text/javascript" src="glMatrix-0.9.5.min.js"></script>
+<script type="text/javascript" src="webgl-utils.js"></script>
+
+<script id="shader-fs" type="x-shader/x-fragment">
+    precision mediump float;
+    varying vec4 vColor;
+    varying vec2 vUV;
+    void main(void) {
+        float r=min(1.0,dot(vUV.xy,vUV.xy));
+        r=1.0-r*r;
+        gl_FragColor = vec4(vColor.xyz,r);
+    }
+</script>
+
+<script id="shader-vs" type="x-shader/x-vertex">
+    attribute vec3 vaVertexPosition;
+    attribute vec4 vaVertexColor;
+    attribute vec3 vaUV;
+
+    uniform mat4 uMVMatrix;
+    uniform mat4 uPMatrix;
+    uniform vec4 uScr;
+
+    varying vec4 vColor;
+    varying vec2 vUV;
+
+    void main(void) {
+        vec3 pos=vaVertexPosition.xyz;
+        pos.y=pos.y+cos(uScr.y+vaUV.z);
+        vec4 position= uMVMatrix * vec4(pos,1.0);
+        position = uPMatrix * position;
+        position.x = position.x+vaUV.x * vaUV.z * 5.0;// * cos(position.x);
+        position.y = position.y+vaUV.y * vaUV.z * 5.0;// * cos(position.x);
+        gl_Position = position;
+        vColor = vaVertexColor;
+        vColor = vaVertexColor;
+        vColor = vaVertexColor;
+        vUV = vaUV.xy;
+    }
+</script>
+
+
+<script type="text/javascript">
+
+var gl;
+function initGL(canvas) {
+    try {
+        gl = canvas.getContext("experimental-webgl");
+        gl.viewportWidth = canvas.width;
+        gl.viewportHeight = canvas.height;
+    } catch (e) {
+    }
+    if (!gl) {
+        alert("Could not initialise WebGL, sorry :-(");
+    }
+}
+
+/**
+ * @param hsv 0~1
+ */
+function HSVtoRGB(h, s, v) {
+    if (0 == s) {
+        return [v, v, v];
+    }
+    if (1 < s) s = 1;
+    if (h < 0) h++;
+    if (1 < h) h--;
+    var i = Math.floor(h * 6);
+    var f = h * 6 - i;
+    var p = v * (1 - s);
+    var q = v * (1 - f * s);
+    var t = v * (1 - (1 - f) * s);
+    switch (i) {
+        case 0:
+            return [v, t, p];
+        case 1:
+            return [q, v, p];
+        case 2:
+            return [p, v, t];
+        case 3:
+            return [p, q, v];
+        case 4:
+            return [t, p, v];
+        default:
+            return [v, p, q];
+    }
+}
+
+function getShader(gl, id) {
+    var shaderScript = document.getElementById(id);
+    if (!shaderScript) {
+        return null;
+    }
+
+    var str = "";
+    var k = shaderScript.firstChild;
+    while (k) {
+        if (k.nodeType == 3) {
+            str += k.textContent;
+        }
+        k = k.nextSibling;
+    }
+
+    var shader;
+    if (shaderScript.type == "x-shader/x-fragment") {
+        shader = gl.createShader(gl.FRAGMENT_SHADER);
+    } else if (shaderScript.type == "x-shader/x-vertex") {
+        shader = gl.createShader(gl.VERTEX_SHADER);
+    } else {
+        return null;
+    }
+
+    gl.shaderSource(shader, str);
+    gl.compileShader(shader);
+
+    if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        alert(gl.getShaderInfoLog(shader));
+        return null;
+    }
+
+    return shader;
+}
+
+function getText(id) {
+    var shaderScript = document.getElementById(id);
+    if (!shaderScript) {
+        return null;
+    }
+
+    var str = "";
+    var k = shaderScript.firstChild;
+    while (k) {
+        if (k.nodeType == 3) {
+            str += k.textContent;
+        }
+        k = k.nextSibling;
+    }
+    return str;
+}
+
+var shaderProgram;
+
+function initShaders() {
+    var fragmentShader = getShader(gl, "shader-fs");
+    var vertexShader = getShader(gl, "shader-vs");
+
+    shaderProgram = gl.createProgram();
+    gl.attachShader(shaderProgram, vertexShader);
+    gl.attachShader(shaderProgram, fragmentShader);
+    gl.linkProgram(shaderProgram);
+
+    if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
+        alert("Could not initialise shaders");
+    }
+
+    gl.useProgram(shaderProgram);
+    shaderProgram.vertexAttribute = [];
+    getText("shader-vs").split('\n').forEach(function (a) {
+        var l = a.match(/va[A-Za-z]*;/);
+        var c = a.match(/vec[1-4]/);
+        a.match('attribute') && Array.isArray(l) && l.forEach(function (b) {
+            var name = b.slice(0, b.length - 1);
+            var attr = {
+                name: name,
+                len: Number(c[0][3]),
+                location: gl.getAttribLocation(shaderProgram, name)
+            };
+            shaderProgram.vertexAttribute.push(attr);
+            gl.enableVertexAttribArray(attr.location);
+        });
+    });
+
+    shaderProgram.vertexPositionAttribute = gl.getAttribLocation(shaderProgram, "aVertexPosition");
+    gl.enableVertexAttribArray(shaderProgram.vertexPositionAttribute);
+
+    shaderProgram.pMatrixUniform = gl.getUniformLocation(shaderProgram, "uPMatrix");
+    shaderProgram.mvMatrixUniform = gl.getUniformLocation(shaderProgram, "uMVMatrix");
+    shaderProgram.uScr = gl.getUniformLocation(shaderProgram, "uScr");
+}
+
+var mvMatrix = mat4.create();
+var mvMatrixStack = [];
+var pMatrix = mat4.create();
+
+function initBuffers() {
+    squareVertexPositionBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, squareVertexPositionBuffer);
+    var vertices = [];
+    var sq = 100;
+    for (var j = 0; j < 10; j++){
+        console.log("count");
+        for (var i = 0; i < sq; i++) {
+            var uv = [
+                [1, 1, Math.random()],
+                [-1, 1, Math.random()],
+                [1, -1, Math.random()],
+                [-1, -1, Math.random()]
+            ];
+            //var r = BSpline(i / sq, [0, 0, 10, 20, 0, 5, 10, 5, 0]);
+            var center = [Math.cos(i / 5) * i* 1, (j-10) * -5, Math.sin(i/5) * i * 1];
+            var c = HSVtoRGB(i * 2/sq, 0.8, 1.0);
+            c = c.concat(1.0);
+            vertices = vertices.concat(center);
+            vertices = vertices.concat(c);
+            vertices = vertices.concat(uv[0]);
+
+            vertices = vertices.concat(center);
+            vertices = vertices.concat(c);
+            vertices = vertices.concat(uv[1]);
+
+            vertices = vertices.concat(center);
+            vertices = vertices.concat(c);
+            vertices = vertices.concat(uv[2]);
+
+            vertices = vertices.concat(center);
+            vertices = vertices.concat(c);
+            vertices = vertices.concat(uv[2]);
+
+            vertices = vertices.concat(center);
+            vertices = vertices.concat(c);
+            vertices = vertices.concat(uv[1]);
+
+            vertices = vertices.concat(center);
+            vertices = vertices.concat(c);
+            vertices = vertices.concat(uv[3]);
+        }
+    }
+
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
+    squareVertexPositionBuffer.numItems = sq * 6 * 10;
+
+}
+
+function mvPushMatrix() {
+    var copy = mat4.create();
+    mat4.set(mvMatrix, copy);
+    mvMatrixStack.push(copy);
+}
+
+function mvPopMatrix() {
+    if (mvMatrixStack.length == 0) {
+        throw "Invalid popMatrix!";
+    }
+    mvMatrix = mvMatrixStack.pop();
+}
+
+
+function setMatrixUniforms() {
+    gl.uniformMatrix4fv(shaderProgram.pMatrixUniform, false, pMatrix);
+    gl.uniformMatrix4fv(shaderProgram.mvMatrixUniform, false, mvMatrix);
+}
+
+
+function degToRad(degrees) {
+    return degrees * Math.PI / 180;
+}
+
+
+var currentlyPressedKeys = {};
+
+function handleKeyDown(event) {
+    currentlyPressedKeys[event.keyCode] = true;
+}
+
+
+function handleKeyUp(event) {
+    currentlyPressedKeys[event.keyCode] = false;
+}
+
+
+var zoom = -15;
+
+
+var tilt = 90;
+var spin = 0;
+
+
+function handleKeys() {
+    if (currentlyPressedKeys[33]) {
+        // Page Up
+        zoom -= 0.1;
+    }
+    if (currentlyPressedKeys[34]) {
+        // Page Down
+        zoom += 0.1;
+    }
+    if (currentlyPressedKeys[38]) {
+        // Up cursor key
+        tilt += 2;
+    }
+    if (currentlyPressedKeys[40]) {
+        // Down cursor key
+        tilt -= 2;
+    }
+}
+
+
+var starVertexPositionBuffer;
+var starVertexTextureCoordBuffer;
+
+function initBuffers() {
+    starVertexPositionBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, starVertexPositionBuffer);
+    vertices = [
+        -1.0, -1.0,  0.0,
+        1.0, -1.0,  0.0,
+        -1.0,  1.0,  0.0,
+        1.0,  1.0,  0.0
+    ];
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.STATIC_DRAW);
+    starVertexPositionBuffer.itemSize = 3;
+    starVertexPositionBuffer.numItems = 4;
+
+    starVertexTextureCoordBuffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, starVertexTextureCoordBuffer);
+    var textureCoords = [
+        0.0, 0.0,
+        1.0, 0.0,
+        0.0, 1.0,
+        1.0, 1.0
+    ];
+    gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(textureCoords), gl.STATIC_DRAW);
+    starVertexTextureCoordBuffer.itemSize = 2;
+    starVertexTextureCoordBuffer.numItems = 4;
+}
+
+
+function drawStar() {
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, starTexture);
+    gl.uniform1i(shaderProgram.samplerUniform, 0);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, starVertexTextureCoordBuffer);
+    gl.vertexAttribPointer(shaderProgram.textureCoordAttribute, starVertexTextureCoordBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, starVertexPositionBuffer);
+    gl.vertexAttribPointer(shaderProgram.vertexPositionAttribute, starVertexPositionBuffer.itemSize, gl.FLOAT, false, 0, 0);
+
+    setMatrixUniforms();
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, starVertexPositionBuffer.numItems);
+}
+
+
+
+function Star(startingDistance, rotationSpeed) {
+    this.angle = 0;
+    this.dist = startingDistance;
+    this.rotationSpeed = rotationSpeed;
+
+    // Set the colors to a starting value.
+    this.randomiseColors();
+}
+
+Star.prototype.draw = function (tilt, spin, twinkle) {
+    mvPushMatrix();
+
+    // Move to the star's position
+    mat4.rotate(mvMatrix, degToRad(this.angle), [0.0, 1.0, 0.0]);
+    mat4.translate(mvMatrix, [this.dist, 0.0, 0.0]);
+
+    // Rotate back so that the star is facing the viewer
+    mat4.rotate(mvMatrix, degToRad(-this.angle), [0.0, 1.0, 0.0]);
+    mat4.rotate(mvMatrix, degToRad(-tilt), [1.0, 0.0, 0.0]);
+
+    if (twinkle) {
+        // Draw a non-rotating star in the alternate "twinkling" color
+        gl.uniform3f(shaderProgram.colorUniform, this.twinkleR, this.twinkleG, this.twinkleB);
+        drawStar();
+    }
+
+    // All stars spin around the Z axis at the same rate
+    mat4.rotate(mvMatrix, degToRad(spin), [0.0, 0.0, 1.0]);
+
+    // Draw the star in its main color
+    gl.uniform3f(shaderProgram.colorUniform, this.r, this.g, this.b);
+    drawStar()
+
+    mvPopMatrix();
+};
+
+
+var effectiveFPMS = 60 / 1000;
+Star.prototype.animate = function (elapsedTime) {
+    this.angle += this.rotationSpeed * effectiveFPMS * elapsedTime;
+
+    // Decrease the distance, resetting the star to the outside of
+    // the spiral if it's at the center.
+    this.dist -= 0.01 * effectiveFPMS * elapsedTime;
+    if (this.dist < 0.0) {
+        this.dist += 5.0;
+        this.randomiseColors();
+    }
+
+};
+
+
+Star.prototype.randomiseColors = function () {
+    // Give the star a random color for normal
+    // circumstances...
+    this.r = Math.random();
+    this.g = Math.random();
+    this.b = Math.random();
+
+    // When the star is twinkling, we draw it twice, once
+    // in the color below (not spinning) and then once in the
+    // main color defined above.
+    this.twinkleR = Math.random();
+    this.twinkleG = Math.random();
+    this.twinkleB = Math.random();
+};
+
+
+
+var stars = [];
+
+function initWorldObjects() {
+    var numStars = 50;
+
+    for (var i=0; i < numStars; i++) {
+        stars.push(new Star((i / numStars) * 5.0, i / numStars));
+    }
+}
+
+
+function drawScene() {
+    gl.viewport(0, 0, gl.viewportWidth, gl.viewportHeight);
+    gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+    mat4.perspective(45, gl.viewportWidth / gl.viewportHeight, 0.1, 100.0, pMatrix);
+
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+    gl.enable(gl.BLEND);
+
+    mat4.identity(mvMatrix);
+    mat4.translate(mvMatrix, [0.0, 0.0, zoom]);
+    mat4.rotate(mvMatrix, degToRad(tilt), [1.0, 0.0, 0.0]);
+
+    var twinkle = document.getElementById("twinkle").checked;
+    for (var i in stars) {
+        stars[i].draw(tilt, spin, twinkle);
+        spin += 0.1;
+    }
+
+}
+
+
+var lastTime = 0;
+
+function animate() {
+    var timeNow = new Date().getTime();
+    if (lastTime != 0) {
+        var elapsed = timeNow - lastTime;
+
+        for (var i in stars) {
+            stars[i].animate(elapsed);
+        }
+    }
+    lastTime = timeNow;
+
+}
+
+
+function tick() {
+    requestAnimFrame(tick);
+    handleKeys();
+    drawScene();
+    animate();
+}
+
+
+
+function webGLStart() {
+    var canvas = document.getElementById("lesson09-canvas");
+    initGL(canvas);
+    initShaders();
+    initBuffers();
+    initWorldObjects();
+
+    gl.clearColor(0.0, 0.0, 0.0, 1.0);
+
+    document.onkeydown = handleKeyDown;
+    document.onkeyup = handleKeyUp;
+
+    tick();
+}
+
+setInterval(drawScene, 16);
+var alpha = false;
+function toggleAlpha() {
+    alpha ? gl.enable(gl.BLEND) : gl.disable(gl.BLEND);
+    alpha = !alpha;
+}
+
+</script>
+
+
+</head>
+
+
+<body onload="webGLStart();">
+<canvas id="lesson01-canvas" style="border: none;" width="600" height="400"></canvas>
+<input type="checkbox" id="twinkle" /> Twinkle<br/>
+(Use up/down cursor keys to rotate, and <code>Page Up</code>/<code>Page Down</code> to zoom out/in)
+
+<input id="toggle" type="button" value="toggle" onclick="toggleAlpha();" />
+</body>
+
+</html>
